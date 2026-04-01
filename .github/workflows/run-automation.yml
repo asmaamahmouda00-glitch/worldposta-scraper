@@ -1,0 +1,90 @@
+name: WorldPosta Knowledge Base Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      fail_on_errors:
+        description: "Fail if any pages failed to scrape? (true/false)"
+        required: false
+        default: "false"
+
+  repository_dispatch:
+    types: [run-scraper]   # n8n triggers with: { "event_type": "run-scraper" }
+
+  schedule:
+    - cron: "0 5 * * 1"   # Every Monday 05:00 UTC (before link check)
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Google Chrome
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -q
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Run Scraper
+        id: scraper
+        run: |
+          FAIL="${{ github.event.inputs.fail_on_errors || 'false' }}"
+          if [ "$FAIL" = "true" ]; then
+            python worldposta_scraper.py --headless
+          else
+            python worldposta_scraper.py --headless --no-fail
+          fi
+
+      - name: Upload Knowledge Base
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worldposta-knowledge-base-${{ github.run_number }}
+          path: |
+            output/
+            scrape_report.json
+          retention-days: 90
+
+      - name: Print summary
+        if: always()
+        run: |
+          echo "===== BEGIN_SCRAPER_JSON ====="
+          cat scrape_report.json | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          print(json.dumps({
+            'total_pages': d['total_pages'],
+            'ok': d['ok'],
+            'failed': d['failed'],
+            'total_words': d['total_words'],
+            'generated_at': d['generated_at']
+          }, indent=2))
+          " || echo "No report file"
+          echo "===== END_SCRAPER_JSON ====="
+
+      # Uncomment to notify n8n when done:
+      # - name: Notify n8n
+      #   if: always()
+      #   run: |
+      #     curl -s -X POST "${{ secrets.N8N_WEBHOOK_URL_SCRAPER }}" \
+      #       -H "Content-Type: application/json" \
+      #       -d "{
+      #             \"run\": ${{ github.run_number }},
+      #             \"status\": \"${{ steps.scraper.outcome }}\",
+      #             \"report_url\": \"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+      #           }"
