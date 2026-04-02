@@ -38,8 +38,7 @@ from bs4 import BeautifulSoup
 
 BASE_URL          = "https://www.worldposta.com"
 PAGE_LOAD_TIMEOUT = 60
-RENDER_WAIT       = 8       # seconds after load for Angular to finish rendering
-MIN_WORD_THRESHOLD = 150    # if we get less than this, page probably didn't render
+RENDER_WAIT       = 6       # seconds after load for Angular to finish rendering
 OUTPUT_DIR        = "output"
 JSON_REPORT       = "scrape_report.json"
 
@@ -285,18 +284,14 @@ def scrape_page(driver, name: str, path: str) -> dict:
 
             driver.get(url)
 
-            # Wait for Angular to render — poll until body has real content
-            rendered = False
-            for _ in range(20):          # up to 20 × 1s = 20s max wait
-                time.sleep(1)
-                src = driver.page_source
-                # Angular renders into app-root — check it has meaningful content
-                if len(src) > 15000 and src.count("<p") > 2:
-                    rendered = True
-                    break
-
-            if not rendered:
-                time.sleep(RENDER_WAIT)  # fallback: wait full time anyway
+            # Wait for Angular — use JS readyState then fixed buffer
+            try:
+                WebDriverWait(driver, 15).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+            except Exception:
+                pass
+            time.sleep(RENDER_WAIT)   # buffer for Angular component rendering
 
             raw_html = driver.page_source
             soup_raw = BeautifulSoup(raw_html, "html.parser")
@@ -304,14 +299,6 @@ def scrape_page(driver, name: str, path: str) -> dict:
             soup     = clean_html(raw_html)
             text     = extract_text(soup)
             words    = len(text.split())
-
-            # If still suspiciously low, wait more and retry extraction once
-            if words < MIN_WORD_THRESHOLD:
-                time.sleep(RENDER_WAIT)
-                raw_html = driver.page_source
-                soup     = clean_html(raw_html)
-                text     = extract_text(soup)
-                words    = len(text.split())
 
             print(f"  ✅ {name:45s} {words:>5} words")
             return {
