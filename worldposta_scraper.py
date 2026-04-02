@@ -251,7 +251,7 @@ def get_page_title(soup) -> str:
     return ""
 
 
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_WAIT  = 8     # seconds between retries
 
 
