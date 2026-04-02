@@ -2,7 +2,7 @@
 """
 WorldPosta Knowledge Base Scraper
 ===================================
-Scrapes all 51 pages from worldposta.com using Selenium,
+Scrapes all 50 pages from worldposta.com using Selenium,
 extracts clean text content, and outputs:
 
   pages/
@@ -82,7 +82,6 @@ PAGES = [
     # ── Posta ─────────────────────────────────────────────────────────────────
     ("Posta Main",                       "/posta",                                  "posta", "posta_main"),
     ("Office 365 with Posta",            "/office-365-with-posta",                  "posta", "office_365_with_posta"),
-    ("Google Business Email with Posta", "/google-business-email-with-posta",       "posta", "google_business_email_with_posta"),
     ("Posta Hybrid",                     "/posta-hybrid",                           "posta", "posta_hybrid"),
     ("Posta Gate",                       "/posta-gate",                             "posta", "posta_gate"),
     ("Posta Gate Comparison",            "/posta-gate-comparison",                  "posta", "posta_gate_comparison"),
@@ -252,50 +251,64 @@ def get_page_title(soup) -> str:
     return ""
 
 
+MAX_RETRIES = 3
+RETRY_WAIT  = 8     # seconds between retries
+
+
 def scrape_page(driver, name: str, path: str) -> dict:
-    """Load one page, extract content. Returns result dict."""
+    """Load one page, extract content. Retries up to MAX_RETRIES times."""
     url = BASE_URL.rstrip("/") + path
 
-    try:
-        driver.get(url)
-        time.sleep(RENDER_WAIT)   # wait for Angular rendering
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            if attempt > 1:
+                print(f"  🔄 Retry {attempt}/{MAX_RETRIES}: {name}")
+                time.sleep(RETRY_WAIT)
 
-        raw_html = driver.page_source
-        soup_raw = BeautifulSoup(raw_html, "html.parser")
-        title    = get_page_title(soup_raw)
-        soup     = clean_html(raw_html)
-        text     = extract_text(soup)
-        words    = len(text.split())
+            driver.get(url)
+            time.sleep(RENDER_WAIT)   # wait for Angular rendering
 
-        print(f"  ✅ {name:45s} {words:>5} words")
-        return {
-            "status":     "ok",
-            "page_name":  name,
-            "path":       path,
-            "url":        url,
-            "title":      title,
-            "content":    text,
-            "word_count": words,
-            "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "error":      None,
-        }
+            raw_html = driver.page_source
+            soup_raw = BeautifulSoup(raw_html, "html.parser")
+            title    = get_page_title(soup_raw)
+            soup     = clean_html(raw_html)
+            text     = extract_text(soup)
+            words    = len(text.split())
 
-    except TimeoutException:
-        print(f"  ❌ TIMEOUT: {name}")
-        return {
-            "status": "timeout", "page_name": name, "path": path,
-            "url": url, "title": "", "content": "", "word_count": 0,
-            "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "error": "Page load timeout",
-        }
-    except Exception as e:
-        print(f"  ❌ ERROR: {name} — {e}")
-        return {
-            "status": "error", "page_name": name, "path": path,
-            "url": url, "title": "", "content": "", "word_count": 0,
-            "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "error": str(e)[:200],
-        }
+            print(f"  ✅ {name:45s} {words:>5} words")
+            return {
+                "status":     "ok",
+                "page_name":  name,
+                "path":       path,
+                "url":        url,
+                "title":      title,
+                "content":    text,
+                "word_count": words,
+                "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "error":      None,
+            }
+
+        except TimeoutException:
+            print(f"  ⚠️ TIMEOUT attempt {attempt}/{MAX_RETRIES}: {name}")
+            if attempt == MAX_RETRIES:
+                print(f"  ❌ FAILED after {MAX_RETRIES} attempts: {name}")
+                return {
+                    "status": "timeout", "page_name": name, "path": path,
+                    "url": url, "title": "", "content": "", "word_count": 0,
+                    "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "error": f"Timeout after {MAX_RETRIES} attempts",
+                }
+
+        except Exception as e:
+            print(f"  ⚠️ ERROR attempt {attempt}/{MAX_RETRIES}: {name} — {e}")
+            if attempt == MAX_RETRIES:
+                print(f"  ❌ FAILED after {MAX_RETRIES} attempts: {name}")
+                return {
+                    "status": "error", "page_name": name, "path": path,
+                    "url": url, "title": "", "content": "", "word_count": 0,
+                    "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "error": str(e)[:200],
+                }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
