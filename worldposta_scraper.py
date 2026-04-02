@@ -38,7 +38,8 @@ from bs4 import BeautifulSoup
 
 BASE_URL          = "https://www.worldposta.com"
 PAGE_LOAD_TIMEOUT = 60
-RENDER_WAIT       = 4       # seconds after load for Angular to finish rendering
+RENDER_WAIT       = 8       # seconds after load for Angular to finish rendering
+MIN_WORD_THRESHOLD = 150    # if we get less than this, page probably didn't render
 OUTPUT_DIR        = "output"
 JSON_REPORT       = "scrape_report.json"
 
@@ -217,23 +218,40 @@ def clean_html(raw_html: str) -> str:
 def extract_text(soup) -> str:
     """Convert cleaned soup to readable plain text."""
     lines = []
-    for el in soup.find_all(["h1","h2","h3","h4","h5","h6","p","li","td","th","blockquote","span","div"]):
-        text = el.get_text(separator=" ", strip=True)
-        # Skip very short fragments and duplicates
-        if len(text) < 15:
-            continue
-        # Add heading markers
-        if el.name in ("h1","h2","h3","h4","h5","h6"):
-            level = int(el.name[1])
-            lines.append(f"\n{'#' * level} {text}\n")
-        else:
-            lines.append(text)
 
-    # Deduplicate consecutive identical lines
+    # First pass: headings with markers
+    for el in soup.find_all(["h1","h2","h3","h4","h5","h6"]):
+        text = el.get_text(separator=" ", strip=True)
+        if len(text) < 3:
+            continue
+        level = int(el.name[1])
+        lines.append(f"\n{'#' * level} {text}\n")
+
+    # Second pass: paragraphs and list items (most Angular content)
+    for el in soup.find_all(["p","li","td","th","blockquote"]):
+        text = el.get_text(separator=" ", strip=True)
+        if len(text) < 20:
+            continue
+        lines.append(text)
+
+    # Third pass: divs and spans ONLY if they have substantial direct text
+    # (not just wrapping other elements) — avoids duplicating nested content
+    for el in soup.find_all(["div","span","section","article"]):
+        # Only take text if element has no block children (it's a leaf node)
+        children = [c for c in el.children if hasattr(c, 'name') and c.name in
+                    ["p","li","div","section","h1","h2","h3","h4","h5","h6","ul","ol","table"]]
+        if children:
+            continue
+        text = el.get_text(separator=" ", strip=True)
+        if len(text) < 30:
+            continue
+        lines.append(text)
+
+    # Deduplicate
     seen  = set()
     clean = []
     for line in lines:
-        key = line.strip()
+        key = re.sub(r"\s+", " ", line.strip())
         if key and key not in seen:
             seen.add(key)
             clean.append(line)
@@ -251,8 +269,8 @@ def get_page_title(soup) -> str:
     return ""
 
 
-MAX_RETRIES = 5
-RETRY_WAIT  = 8     # seconds between retries
+MAX_RETRIES = 3
+RETRY_WAIT  = 6     # seconds between retries
 
 
 def scrape_page(driver, name: str, path: str) -> dict:
@@ -266,7 +284,19 @@ def scrape_page(driver, name: str, path: str) -> dict:
                 time.sleep(RETRY_WAIT)
 
             driver.get(url)
-            time.sleep(RENDER_WAIT)   # wait for Angular rendering
+
+            # Wait for Angular to render — poll until body has real content
+            rendered = False
+            for _ in range(20):          # up to 20 × 1s = 20s max wait
+                time.sleep(1)
+                src = driver.page_source
+                # Angular renders into app-root — check it has meaningful content
+                if len(src) > 15000 and src.count("<p") > 2:
+                    rendered = True
+                    break
+
+            if not rendered:
+                time.sleep(RENDER_WAIT)  # fallback: wait full time anyway
 
             raw_html = driver.page_source
             soup_raw = BeautifulSoup(raw_html, "html.parser")
@@ -274,6 +304,14 @@ def scrape_page(driver, name: str, path: str) -> dict:
             soup     = clean_html(raw_html)
             text     = extract_text(soup)
             words    = len(text.split())
+
+            # If still suspiciously low, wait more and retry extraction once
+            if words < MIN_WORD_THRESHOLD:
+                time.sleep(RENDER_WAIT)
+                raw_html = driver.page_source
+                soup     = clean_html(raw_html)
+                text     = extract_text(soup)
+                words    = len(text.split())
 
             print(f"  ✅ {name:45s} {words:>5} words")
             return {
